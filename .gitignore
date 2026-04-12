@@ -1,0 +1,16 @@
+# Firebase credentials - NEVER commit
+firebase-credentials.json
+
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
