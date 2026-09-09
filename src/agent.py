@@ -1,8 +1,8 @@
 """
 LangChain AI Agent for Trade Tracker weekly analysis.
-Uses NVIDIA's DeepSeek R1 model via LangChain to analyze trade data.
+Calls NVIDIA's NIM API directly via HTTP (OpenAI-compatible endpoint).
 """
-from langchain_nvidia_ai_endpoints import ChatNVIDIA
+import requests
 from langchain_core.prompts import PromptTemplate
 from firebase_utils import fetch_trades
 from dotenv import load_dotenv
@@ -14,12 +14,19 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# List of reliable models to try in sequence (Robust Fallback Mechanism)
+# NVIDIA NIM API — OpenAI-compatible endpoint
+NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+
+# 3 NVIDIA Nemotron models — confirmed live on integrate.api.nvidia.com (Sept 2026)
+# Primary: ultra-550b (thinking grade) — requires premium account, auto-falls to next
+# Fallback 1: super-120b (large, strong reasoning, accessible on free tier)
+# Fallback 2: nemotron-70b (medium weight, reliable)
+# Fallback 3: lightning-30b (lightweight, fast)
 MODEL_NAMES = [
-    "meta/llama-3.3-70b-instruct",
-    "deepseek-ai/deepseek-v3.2",
-    "mistralai/mistral-large-3-675b-instruct-2512",
-    "google/gemma-3-27b-it"
+    "nvidia/nemotron-3-ultra-550b-a55b",         # Primary: ultra thinking model (550B)
+    "nvidia/nemotron-3-super-120b-a12b",         # Fallback 1: super 120B
+    "nvidia/llama-3.1-nemotron-70b-instruct",    # Fallback 2: nemotron 70B
+    "nvidia/nemotron-3.5-lightning-30b-a3b",     # Fallback 3: lightweight 30B
 ]
 
 # Prompt template tailored to your Trade Tracker data structure
@@ -241,34 +248,58 @@ def analyze_weekly_trades(
         trade_summary=trade_summary_str,
     )
 
-    # 4. Call the NVIDIA LLM via LangChain using fallback logic
+    # 4. Call the NVIDIA API directly via HTTP
     response = invoke_with_fallback(formatted_prompt)
 
-    return response.content
+    return response
 
 
-def invoke_with_fallback(prompt: str):
-    """Try invoking multiple models in sequence until one succeeds."""
+def invoke_with_fallback(prompt: str) -> str:
+    """Try invoking multiple NVIDIA models via direct HTTP until one succeeds."""
+    api_key = os.getenv("NVIDIA_API_KEY")
+    if not api_key:
+        raise Exception("NVIDIA_API_KEY is not set in .env file")
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
     last_error = None
-    
+
     for i, model_name in enumerate(MODEL_NAMES, 1):
         try:
-            logger.info(f"Attempt {i}/{len(MODEL_NAMES)} - Trying AI model: {model_name}...")
-            llm = ChatNVIDIA(
-                model=model_name,
-                api_key=os.getenv("NVIDIA_API_KEY"),
-                temperature=0.6,
-                top_p=0.7,
-                max_tokens=4096,
+            logger.info(f"Attempt {i}/{len(MODEL_NAMES)} - Trying model: {model_name}...")
+            payload = {
+                "model": model_name,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.6,
+                "top_p": 0.7,
+                "max_tokens": 2000,   # Reduced from 4096 for faster responses
+                "stream": False,
+            }
+            response = requests.post(
+                NVIDIA_API_URL,
+                headers=headers,
+                json=payload,
+                timeout=90,           # 90s per model max; frontend allows 180s total
             )
-            return llm.invoke(prompt)
+            if response.status_code == 200:
+                data = response.json()
+                content = data["choices"][0]["message"]["content"]
+                logger.info(f"Success with model: {model_name}")
+                return content
+            else:
+                raise Exception(f"[{response.status_code}] {response.text[:200]}")
         except Exception as e:
             last_error = e
             logger.warning(f"Model '{model_name}' failed: {e}")
             if i < len(MODEL_NAMES):
-                logger.info("Switching to next fallback model...")
-            
-    logger.error("All fallback models failed. NVIDIA servers might be temporarily down or keys are invalid.")
+                logger.info("Switching to next fallback model in 1 second...")
+                time.sleep(1)  # Brief pause to avoid rate limiting between retries
+
+    logger.error("All fallback models failed.")
     raise Exception(
         f"Analysis failed: Tried {len(MODEL_NAMES)} different AI models but all failed. Last error: {last_error}"
     )
