@@ -68,27 +68,29 @@ def fetch_trades(user_id: str, start_date: str, end_date: str) -> list[dict]:
     start_dt = datetime.strptime(start_date, "%Y-%m-%d")
     end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
 
-    # Primary query: filter by 'createdAt' (when the trade doc was saved)
     trades_ref = db.collection("trades")
+
+    # Primary query: filter by 'createdAt' (when the trade doc was saved).
+    # NOTE: .order_by() is intentionally omitted — combining inequality filters
+    # on multiple fields with order_by requires a Firestore composite index that
+    # may not exist. Sorting is done in Python below instead.
     query = (
         trades_ref
         .where(filter=FieldFilter("userId", "==", user_id))
         .where(filter=FieldFilter("createdAt", ">=", start_dt))
         .where(filter=FieldFilter("createdAt", "<=", end_dt))
-        .order_by("createdAt", direction=firestore.Query.DESCENDING)
     )
 
     docs = list(query.stream())
 
-    # Fallback: if createdAt query returns nothing, try filtering by 'buyDate'
-    # This handles cases where the trade's buy date differs from its creation date
+    # Fallback: if createdAt query returns nothing, try filtering by 'buyDate'.
+    # This handles cases where the trade's buy date differs from its creation date.
     if not docs:
         query_by_buy = (
             trades_ref
             .where(filter=FieldFilter("userId", "==", user_id))
             .where(filter=FieldFilter("buyDate", ">=", start_dt))
             .where(filter=FieldFilter("buyDate", "<=", end_dt))
-            .order_by("buyDate", direction=firestore.Query.DESCENDING)
         )
         docs = list(query_by_buy.stream())
 
@@ -124,5 +126,9 @@ def fetch_trades(user_id: str, start_date: str, end_date: str) -> list[dict]:
             "lessonsLearned": data.get("lessonsLearned", ""),
         }
         trades.append(trade)
+
+    # Sort newest-first in Python (replaces the removed .order_by() to avoid
+    # requiring a Firestore composite index)
+    trades.sort(key=lambda t: t["createdAt"] or "", reverse=True)
 
     return trades
