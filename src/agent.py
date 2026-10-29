@@ -215,7 +215,7 @@ def format_trade_data(trades: list[dict]) -> str:
 
 def analyze_weekly_trades(
     user_id: str, start_date: str, end_date: str, query: str
-) -> str:
+) -> dict:
     """
     Main function: fetch trades from Firebase and generate AI analysis.
 
@@ -226,16 +226,20 @@ def analyze_weekly_trades(
         query: User's question/prompt
 
     Returns:
-        AI-generated analysis string
+        dict with keys:
+          - has_trades (bool): False when no trades exist for the date range
+          - analysis (str | None): AI-generated analysis, or None when has_trades is False
     """
     # 1. Fetch trades from Firebase
     trades = fetch_trades(user_id, start_date, end_date)
 
+    # Early exit — no LLM call when there are no trades
     if not trades:
-        return (
-            f"No trades found for the period {start_date} to {end_date}. "
-            "Please make sure you have trades recorded in this date range."
+        logger.info(
+            f"No trades found for user '{user_id}' between {start_date} and {end_date}. "
+            "Skipping LLM call."
         )
+        return {"has_trades": False, "analysis": None}
 
     # 2. Prepare data for the LLM
     trade_data_str = format_trade_data(trades)
@@ -249,9 +253,9 @@ def analyze_weekly_trades(
     )
 
     # 4. Call the NVIDIA API directly via HTTP
-    response = invoke_with_fallback(formatted_prompt)
+    analysis = invoke_with_fallback(formatted_prompt)
 
-    return response
+    return {"has_trades": True, "analysis": analysis}
 
 
 def invoke_with_fallback(prompt: str) -> str:

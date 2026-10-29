@@ -34,8 +34,8 @@ class WeeklyAnalysisRequest(BaseModel):
 
 
 class WeeklyAnalysisResponse(BaseModel):
-    analysis: str
-    status: str = "success"
+    analysis: str | None = None
+    status: str = "success"  # "success" | "no_trades"
 
 
 @app.get("/")
@@ -55,7 +55,9 @@ async def weekly_analysis(request: WeeklyAnalysisRequest):
     Generate AI-powered weekly trade analysis.
 
     Fetches trade data from Firebase for the given user and date range,
-    then uses NVIDIA's DeepSeek R1 model to generate an analysis report.
+    then uses NVIDIA's Nemotron model to generate an analysis report.
+    Returns status="no_trades" immediately (without calling the LLM) when
+    there are no trades in the selected date range.
     """
     try:
         # Validate date format
@@ -76,15 +78,19 @@ async def weekly_analysis(request: WeeklyAnalysisRequest):
                 detail="user_id is required",
             )
 
-        # Run the LangChain agent
-        analysis = analyze_weekly_trades(
+        # Run the agent (returns dict: {has_trades, analysis})
+        result = analyze_weekly_trades(
             user_id=request.user_id,
             start_date=request.start_date,
             end_date=request.end_date,
             query=request.query,
         )
 
-        return WeeklyAnalysisResponse(analysis=analysis)
+        # No trades found — return immediately without LLM call
+        if not result["has_trades"]:
+            return WeeklyAnalysisResponse(analysis=None, status="no_trades")
+
+        return WeeklyAnalysisResponse(analysis=result["analysis"], status="success")
 
     except HTTPException:
         raise
